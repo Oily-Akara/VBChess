@@ -1,6 +1,7 @@
 Attribute VB_Name = "M_Engine"
 ' Module: M_Engine
 Option Explicit
+Public SelectedSq As Integer ' Stores which square clicked first
 
 ' --- CONSTANTS ---
 Public Const EMPTY_SQ As Integer = 0
@@ -21,6 +22,7 @@ Public Const B_BISHOP As Integer = 9
 Public Const B_ROOK As Integer = 10
 Public Const B_QUEEN As Integer = 11
 Public Const B_KING As Integer = 12
+
 
 ' The 10x12 Board Array
 ' Index 21 is Top-Left (A8), Index 98 is Bottom-Right (H1)
@@ -125,4 +127,53 @@ Public Sub RenderBoard()
     Next row
     
     Application.ScreenUpdating = True
+End Sub
+
+' --- CLICK HANDLER ---
+Public Sub HandleClick(r As Integer, c As Integer)
+    Dim clickedIndex As Integer
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Sheets("Chess")
+    
+    ' 1. Convert Excel Row/Col (2-9) to Array Index
+    ' Math: 21 is top-left.
+    clickedIndex = 21 + ((r - 2) * 10) + (c - 2)
+    
+    ' 2. DECISION: Select or Move?
+    
+    ' If we haven't selected anything yet (0)...
+    If SelectedSq = 0 Then
+        ' Only select if there is a piece there (Not empty)
+        If Board(clickedIndex) <> 0 Then
+            SelectedSq = clickedIndex
+            ' Color the cell Yellow to show selection
+            ws.Cells(r, c).Interior.Color = vbYellow
+        End If
+        
+    ' If we ALREADY selected a piece...
+    Else
+        ' 3. MOVE THE PIECE
+        ' Copy piece from Old Square to New Square
+        Board(clickedIndex) = Board(SelectedSq)
+        ' Delete piece from Old Square
+        Board(SelectedSq) = 0
+        
+        ' 4. CLEAN UP
+        SelectedSq = 0 ' Forget selection
+        
+        ' Reset Colors (Green/Cream)
+        Dim i As Integer, j As Integer
+        For i = 2 To 9
+            For j = 2 To 9
+                If (i + j) Mod 2 <> 0 Then
+                    ws.Cells(i, j).Interior.Color = RGB(118, 150, 86)
+                Else
+                    ws.Cells(i, j).Interior.Color = RGB(238, 238, 210)
+                End If
+            Next j
+        Next i
+        
+        ' Redraw the pieces
+        RenderBoard
+    End If
 End Sub

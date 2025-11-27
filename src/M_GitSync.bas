@@ -12,7 +12,7 @@ Public Sub ExportSourceCode()
     ' Create a "src" folder in the same directory as the Excel file
     exportPath = wb.Path & "\src\"
     
-    If Dir(exportPath, vbDirectory) = "" Then
+    If dir(exportPath, vbDirectory) = "" Then
         MkDir exportPath
     End If
     

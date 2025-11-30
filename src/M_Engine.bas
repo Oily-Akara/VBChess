@@ -81,7 +81,11 @@ Public Sub InitBoard()
     W_KingMoved = False: B_KingMoved = False
     EnPassantTarget = 0
     
-    ' 4. CLEAR SEARCH MEMORY (Crucial for Speed)
+    ' 4. Initialize Move Notation Array
+    ReDim MoveNotation(1 To 200)
+    MoveCount = 0
+    
+    ' 4. CLEAR SEARCH MEMORY
     Dim d As Integer, m As Integer
     For d = 0 To 20
         For m = 0 To 2
@@ -94,8 +98,8 @@ Public Sub InitBoard()
         Next c
     Next r
    
-    ' 5. Init Tables (The AI Brain Upgrade)
-    InitPST ' <--- CALLING THE NEW PST SETUP
+    ' 5. Init Tables
+    InitPST
     
     ' 6. Setup & Render
     SetupStandardPosition
@@ -103,10 +107,6 @@ Public Sub InitBoard()
     
     ' 7. Reset Turn
     Turn = 1
-    Range("K2").Value = "Turn: White"
-    Range("K3").Value = "Ready"
-    
-    MsgBox "Game Reset! King's Indian Logic Loaded."
 End Sub
 Private Sub InitPST()
     Dim i As Integer
@@ -407,22 +407,44 @@ End Sub
 
 '  CLICK HANDLER
 Public Sub HandleClick(r As Integer, c As Integer)
+    ' Check if board is initialized
     If Board(0) <> 99 Then
-        MsgBox "Please click the Init/Reset button first!"
+        ' If not initialized, check if clicking menu
+        If c = 11 And (r = 5 Or r = 6) Then
+            HandleMenuClick r, c
+            Exit Sub
+        Else
+            MsgBox "Please select a game mode first!"
+            ShowGameMenu
+            Exit Sub
+        End If
+    End If
+    
+    ' Check if clicking control buttons
+    If c = 11 And r >= 8 And r <= 10 Then
+        HandleMenuClick r, c
         Exit Sub
     End If
+    
+    ' Regular game click logic
     Dim clickedIndex As Integer
     Dim ws As Worksheet
     Set ws = ThisWorkbook.Sheets("Chess")
     
     clickedIndex = 21 + ((r - 2) * 10) + (c - 2)
     
-    '  PART A: SELECTING A PIECE
+    ' PART A: SELECTING A PIECE
     If SelectedSq = 0 Then
         If Board(clickedIndex) = 0 Then Exit Sub
         
         Dim pieceColor As Integer
         If Board(clickedIndex) <= 6 Then pieceColor = 1 Else pieceColor = 2
+          If CurrentGameMode = MODE_PVAI Then
+            If pieceColor <> HumanColor Then
+                MsgBox "That is the computer's piece!"
+                Exit Sub
+            End If
+        End If
         
         If pieceColor <> Turn Then
             MsgBox "It's not your turn!"
@@ -432,7 +454,7 @@ Public Sub HandleClick(r As Integer, c As Integer)
         SelectedSq = clickedIndex
         ws.Cells(r, c).Interior.color = vbYellow
         
-    '  PART B: MOVING THE PIECE
+    ' PART B: MOVING THE PIECE
     Else
         ' 1. Friendly Fire / Reselect Check
         Dim targetPiece As Integer
@@ -450,7 +472,7 @@ Public Sub HandleClick(r As Integer, c As Integer)
         End If
         
         ' 2. Legal Move Check
-         If IsLegalMove(SelectedSq, clickedIndex) = False Then
+        If IsLegalMove(SelectedSq, clickedIndex) = False Then
             MsgBox "Invalid Move!"
             SelectedSq = 0
             ws.Range("B2:I9").Interior.ColorIndex = xlNone
@@ -459,11 +481,13 @@ Public Sub HandleClick(r As Integer, c As Integer)
             Exit Sub
         End If
         
-       ' 3. EXECUTE MOVE
+        ' 3. EXECUTE MOVE
         Dim pieceMoved As Integer
+        Dim captureFlag As Boolean
         pieceMoved = Board(SelectedSq)
+        captureFlag = (Board(clickedIndex) <> EMPTY_SQ)
         
-        ' UPDATE HISTORY (Crucial for AI Book)
+        ' UPDATE HISTORY
         moveHistory = moveHistory & SelectedSq & clickedIndex & " "
         
         ' A. Castling
@@ -488,6 +512,7 @@ Public Sub HandleClick(r As Integer, c As Integer)
             Dim victimSq As Integer
             If Turn = 1 Then victimSq = clickedIndex + 10 Else victimSq = clickedIndex - 10
             Board(victimSq) = 0
+            captureFlag = True ' En passant is a capture
             
         ' C. Normal Move
         Else
@@ -496,6 +521,9 @@ Public Sub HandleClick(r As Integer, c As Integer)
         End If
         
         HandlePromotion clickedIndex
+        
+        ' RECORD MOVE IN NOTATION
+        RecordMove SelectedSq, clickedIndex, captureFlag
         
         ' 4. UPDATE FLAGS
         If pieceMoved = W_KING Then W_KingMoved = True
@@ -513,19 +541,22 @@ Public Sub HandleClick(r As Integer, c As Integer)
         
         SelectedSq = 0
         
-       ' 6. SWITCH TURN
+        ' 6. SWITCH TURN
         If Turn = 1 Then
             Turn = 2
-            Range("K2").Value = "Turn: Black (Thinking...)"
+            Range("K5").Value = "Turn: Black" & IIf(CurrentGameMode = MODE_PVAI, " (Thinking...)", "")
             RenderBoard
             HighlightChecks
             CheckGameStatus
             
-            DoEvents ' Draw screen before AI starts
-            MakeComputerMove
+            ' Only call AI if in PvAI mode
+            If CurrentGameMode = MODE_PVAI Then
+                DoEvents
+                MakeComputerMove
+            End If
         Else
             Turn = 1
-            Range("K2").Value = "Turn: White"
+            Range("K5").Value = "Turn: White"
         End If
         
         RenderBoard
@@ -774,19 +805,19 @@ Function IsPathClear(startSq As Integer, endSq As Integer) As Boolean
    
     
     If diff Mod 10 = 0 Then
-        ' Vertical Move (10, 20, -10...)
+        ' Vertical Move
         step = 10 * Sgn(diff)
         
     ElseIf diff Mod 11 = 0 Then
-        ' Diagonal \ (11, 22, -11...)
+        ' Diagonal
         step = 11 * Sgn(diff)
         
     ElseIf diff Mod 9 = 0 Then
-        ' Diagonal / (9, 18, -9...)
+        ' Diagonal
         step = 9 * Sgn(diff)
         
     ElseIf (diff \ 10) = 0 Then
-        ' Horizontal Move (1, 2, -1...)
+        ' Horizontal Move
         ' We check this LAST because 9 \ 10 is 0, which would confuse a diagonal for a horizontal
         step = 1 * Sgn(diff)
         
@@ -800,7 +831,7 @@ Function IsPathClear(startSq As Integer, endSq As Integer) As Boolean
     curr = startSq + step
     While curr <> endSq
         If Board(curr) <> 0 Then
-            IsPathClear = False ' Blocked!
+            IsPathClear = False
             Exit Function
         End If
         curr = curr + step
@@ -1074,12 +1105,13 @@ Public Sub HandlePromotion(sq As Integer)
         Case "Q": newPiece = W_QUEEN
     End Select
     
-    ' Apply correct color offset if needed
-    ' (My logic: White = newPiece. Black = newPiece + 6)
+  
     If pColor = 1 Then
         Board(sq) = newPiece
     Else
         Board(sq) = newPiece + 6
     End If
 End Sub
+
+
 

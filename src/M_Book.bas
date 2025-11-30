@@ -12,18 +12,18 @@ Public Function GetBookMove(turnColor As Integer) As Long
     moveHist = Trim(moveHistory) ' Use the global variable from M_AI
     
     ' Count moves by counting spaces + 1
-    Dim moveCount As Integer
+    Dim MoveCount As Integer
     If moveHist = "" Then
-        moveCount = 0
+        MoveCount = 0
     Else
         Dim moves() As String
         moves = Split(moveHist)
-        moveCount = UBound(moves) + 1
+        MoveCount = UBound(moves) + 1
     End If
     
     ' Get Black's move number (we move on odd indices: 1, 3, 5...)
     Dim blackMoveNum As Integer
-    blackMoveNum = (moveCount + 1) \ 2
+    blackMoveNum = (MoveCount + 1) \ 2
     
     ' =
     ' KING'S INDIAN DEFENSE MAIN LINE VS 1.d4

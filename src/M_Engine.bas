@@ -3,9 +3,10 @@ Attribute VB_Name = "M_Engine"
 Option Explicit
 Public SelectedSq As Integer ' Stores which square clicked first
 Public Turn As Integer ' 1 for White, 2 for Black
+Public PositionHistory(1 To 500) As String
+Public PositionCount As Integer
 
 ' HISTORY VARIABLES
-' --- NEW PERFORMANCE GLOBALS ---
 ' 120-square board based PST arrays
 Public pstPawn(119) As Integer
 Public pstKnight(119) As Integer
@@ -23,6 +24,9 @@ Public HistoryMoves(119, 119) As Long ' History heuristic
 Private MoveBuffer(20, 100) As Long ' Depth 20, Max 100 moves
 Private MoveScores(20, 100) As Long
 
+' HIGHLIGHTING VARIABLES (FANCY VISUALS)
+Public LastMoveStart As Integer
+Public LastMoveEnd As Integer
 
 ' 1. Track if Kings have moved
 Public W_KingMoved As Boolean
@@ -56,7 +60,6 @@ Public Const B_QUEEN As Integer = 11
 Public Const B_KING As Integer = 12
 Public moveHistory As String
 
-
 Public Board(0 To 119) As Integer
 
 '  MAIN SETUP SUB
@@ -80,6 +83,12 @@ Public Sub InitBoard()
     moveHistory = ""
     W_KingMoved = False: B_KingMoved = False
     EnPassantTarget = 0
+    PositionCount = 0
+    
+    ' Reset Highlights
+    LastMoveStart = 0
+    LastMoveEnd = 0
+    SelectedSq = 0
     
     ' 4. Initialize Move Notation Array
     ReDim MoveNotation(1 To 200)
@@ -100,10 +109,13 @@ Public Sub InitBoard()
    
     ' 5. Init Tables
     InitPST
+     SetupSidePanel ' Builds the notation table
+    UpdateTurnUI   ' Draws the turn indicator
     
     ' 6. Setup & Render
     SetupStandardPosition
     RenderBoard
+    ApplyCheckerboard
     
     ' 7. Reset Turn
     Turn = 1
@@ -357,8 +369,9 @@ Public Sub RenderBoard()
     
     Application.ScreenUpdating = False
     
-
+    ' Clear Previous Render & Reset Font colors (Clears move indicator dots too)
     ws.Range("B2:I9").ClearContents
+    ws.Range("B2:I9").Font.ColorIndex = xlAutomatic
     
     Dim row As Integer, col As Integer
     Dim piece As Integer
@@ -368,9 +381,13 @@ Public Sub RenderBoard()
     ' Loop through visual rows 0 to 7 (Top to Bottom)
     For row = 0 To 7
         For col = 0 To 7
-            ' Calculate the 10x12 array index
-            ' 21 is the top-left corner (A8)
-            index = 21 + (row * 10) + col
+            
+            ' Flipped view mapping for Black
+            If HumanColor = 2 Then
+                index = 21 + ((7 - row) * 10) + (7 - col)
+            Else
+                index = 21 + (row * 10) + col
+            End If
             
             piece = Board(index)
             
@@ -381,7 +398,6 @@ Public Sub RenderBoard()
                 Case W_BISHOP: symbol = ChrW(&H2657)
                 Case W_KNIGHT: symbol = ChrW(&H2658)
                 Case W_PAWN: symbol = ChrW(&H2659)
-                
                 Case B_KING: symbol = ChrW(&H265A)
                 Case B_QUEEN: symbol = ChrW(&H265B)
                 Case B_ROOK: symbol = ChrW(&H265C)
@@ -391,13 +407,14 @@ Public Sub RenderBoard()
                 Case Else: symbol = ""
             End Select
             
-            ' Draw to Excel (Offset by 2 because board starts at B2)
             With ws.Cells(row + 2, col + 2)
-                .Value = symbol
-                .Font.Name = "Segoe UI Symbol" ' Good font for chess pieces
-                .Font.Size = 24
-                .HorizontalAlignment = xlCenter
-                .VerticalAlignment = xlCenter
+                If symbol <> "" Then
+                    .Value = symbol
+                    .Font.Name = "Segoe UI Symbol"
+                    .Font.Size = 24
+                    .HorizontalAlignment = xlCenter
+                    .VerticalAlignment = xlCenter
+                End If
             End With
         Next col
     Next row
@@ -407,10 +424,10 @@ End Sub
 
 '  CLICK HANDLER
 Public Sub HandleClick(r As Integer, c As Integer)
-    ' Check if board is initialized
+    ' Check if board is initialized (Board(0) == 99 means active)
     If Board(0) <> 99 Then
-        ' If not initialized, check if clicking menu
-        If c = 11 And (r = 5 Or r = 6) Then
+        ' THIS FIXES THE MENU: Now accepts clicks on rows 5, 6, 7, and 8
+        If c = 11 And (r >= 5 And r <= 8) Then
             HandleMenuClick r, c
             Exit Sub
         Else
@@ -431,7 +448,17 @@ Public Sub HandleClick(r As Integer, c As Integer)
     Dim ws As Worksheet
     Set ws = ThisWorkbook.Sheets("Chess")
     
-    clickedIndex = 21 + ((r - 2) * 10) + (c - 2)
+    ' NEW FLIP LOGIC: Inverse the click coordinates if playing as Black
+    Dim bRow As Integer, bCol As Integer
+    If HumanColor = 2 Then
+        bRow = 7 - (r - 2)
+        bCol = 7 - (c - 2)
+    Else
+        bRow = (r - 2)
+        bCol = (c - 2)
+    End If
+    
+    clickedIndex = 21 + (bRow * 10) + bCol
     
     ' PART A: SELECTING A PIECE
     If SelectedSq = 0 Then
@@ -439,7 +466,7 @@ Public Sub HandleClick(r As Integer, c As Integer)
         
         Dim pieceColor As Integer
         If Board(clickedIndex) <= 6 Then pieceColor = 1 Else pieceColor = 2
-          If CurrentGameMode = MODE_PVAI Then
+        If CurrentGameMode = MODE_PVAI Then
             If pieceColor <> HumanColor Then
                 MsgBox "That is the computer's piece!"
                 Exit Sub
@@ -451,8 +478,10 @@ Public Sub HandleClick(r As Integer, c As Integer)
             Exit Sub
         End If
         
+        ' Select and highlight
         SelectedSq = clickedIndex
-        ws.Cells(r, c).Interior.color = vbYellow
+        ApplyCheckerboard
+        HighlightLegalMoves SelectedSq
         
     ' PART B: MOVING THE PIECE
     Else
@@ -463,10 +492,10 @@ Public Sub HandleClick(r As Integer, c As Integer)
             Dim targetColor As Integer
             If targetPiece <= 6 Then targetColor = 1 Else targetColor = 2
             If targetColor = Turn Then
-                ws.Range("B2:I9").Interior.ColorIndex = xlNone
-                ApplyCheckerboard
                 SelectedSq = clickedIndex
-                ws.Cells(r, c).Interior.color = vbYellow
+                RenderBoard ' Clear previous legal move dots
+                ApplyCheckerboard ' Recalculate highlighting
+                HighlightLegalMoves SelectedSq
                 Exit Sub
             End If
         End If
@@ -475,9 +504,8 @@ Public Sub HandleClick(r As Integer, c As Integer)
         If IsLegalMove(SelectedSq, clickedIndex) = False Then
             MsgBox "Invalid Move!"
             SelectedSq = 0
-            ws.Range("B2:I9").Interior.ColorIndex = xlNone
-            ApplyCheckerboard
             RenderBoard
+            ApplyCheckerboard
             Exit Sub
         End If
         
@@ -486,6 +514,10 @@ Public Sub HandleClick(r As Integer, c As Integer)
         Dim captureFlag As Boolean
         pieceMoved = Board(SelectedSq)
         captureFlag = (Board(clickedIndex) <> EMPTY_SQ)
+        
+        ' RECORD THE HIGHLIGHT FOR THE MOVE MADE
+        LastMoveStart = SelectedSq
+        LastMoveEnd = clickedIndex
         
         ' UPDATE HISTORY
         moveHistory = moveHistory & SelectedSq & clickedIndex & " "
@@ -512,7 +544,7 @@ Public Sub HandleClick(r As Integer, c As Integer)
             Dim victimSq As Integer
             If Turn = 1 Then victimSq = clickedIndex + 10 Else victimSq = clickedIndex - 10
             Board(victimSq) = 0
-            captureFlag = True ' En passant is a capture
+            captureFlag = True
             
         ' C. Normal Move
         Else
@@ -521,8 +553,6 @@ Public Sub HandleClick(r As Integer, c As Integer)
         End If
         
         HandlePromotion clickedIndex
-        
-        ' RECORD MOVE IN NOTATION
         RecordMove SelectedSq, clickedIndex, captureFlag
         
         ' 4. UPDATE FLAGS
@@ -541,53 +571,37 @@ Public Sub HandleClick(r As Integer, c As Integer)
         
         SelectedSq = 0
         
-        ' 6. SWITCH TURN
-        If Turn = 1 Then
-            Turn = 2
-            Range("K5").Value = "Turn: Black" & IIf(CurrentGameMode = MODE_PVAI, " (Thinking...)", "")
-            RenderBoard
-            HighlightChecks
-            CheckGameStatus
-            
-            ' Only call AI if in PvAI mode
-            If CurrentGameMode = MODE_PVAI Then
-                DoEvents
-                MakeComputerMove
-            End If
-        Else
-            Turn = 1
-            Range("K5").Value = "Turn: White"
+       ' 6. SWITCH TURN
+        If Turn = 1 Then Turn = 2 Else Turn = 1
+        
+        ' --- AUTO-FLIP FOR PVP ---
+        ' If playing 2-player mode, spin the board around to face the new player
+        If CurrentGameMode = MODE_PVP Then
+            HumanColor = Turn
         End If
         
+        ' Render graphics and turn indicator BEFORE computer moves
+        UpdateTurnUI
         RenderBoard
-        ws.Range("B2:I9").Interior.ColorIndex = xlNone
         ApplyCheckerboard
         HighlightChecks
-        Range("O2").Value = EvaluatePosition()
         CheckGameStatus
+        
+        ' 7. TRIGGER COMPUTER MOVE (If applicable)
+        If CurrentGameMode = MODE_PVAI And Turn <> HumanColor Then
+            DoEvents ' Allows the "Thinking" UI to render
+            MakeComputerMove
+            
+            ' Once the AI finishes its move, it will have switched the Turn back to the Human.
+            ' We must update the UI one more time to reflect this!
+            UpdateTurnUI
+            RenderBoard
+            ApplyCheckerboard
+            HighlightChecks
+            CheckGameStatus
+        End If
     End If
 End Sub
-'  HELPER FUNCTIONS
-
-' Get the Row (0-7) from the 10x12 Index
-Function GetRow(idx As Integer) As Integer
-    GetRow = (idx \ 10) - 2
-End Function
-
-' Get the Col (0-7) from the 10x12 Index
-Function GetCol(idx As Integer) As Integer
-    GetCol = (idx Mod 10) - 1
-End Function
-
-' Simplify piece value to Type (1=Pawn, 2=Knight... regardless of color)
-Function GetType(pieceVal As Integer) As Integer
-    If pieceVal > 6 Then
-        GetType = pieceVal - 6
-    Else
-        GetType = pieceVal
-    End If
-End Function
-
 
 Function IsLegalMove(startSq As Integer, endSq As Integer) As Boolean
     Dim pVal As Integer, pType As Integer, pColor As Integer
@@ -676,9 +690,6 @@ Function IsLegalMove(startSq As Integer, endSq As Integer) As Boolean
                         If pColor = 1 Then rMoved = W_RookRMoved Else rMoved = B_RookRMoved
                         
                         ' A. Check Path Empty (F=Index 6, G=Index 7)
-                        ' Note: In 10x12 array, Row starts at 1, so F is col 6, G is col 7 relative to row start
-                        ' wait, y*10 + 6 (F) and y*10 + 7 (G)
-                        
                         If rMoved = False And Board(y * 10 + 6) = 0 And Board(y * 10 + 7) = 0 Then
                             ' B. Check Safety: Current(E), Middle(F), Dest(G) must not be attacked
                             ' E = Col 5, F = Col 6, G = Col 7
@@ -694,7 +705,6 @@ Function IsLegalMove(startSq As Integer, endSq As Integer) As Boolean
                         If pColor = 1 Then rMoved = W_RookLMoved Else rMoved = B_RookLMoved
                         
                         ' A. Check Path Empty (B=Index 2, C=Index 3, D=Index 4)
-                        ' Note: Array indices: B=2, C=3, D=4
                         If rMoved = False And Board(y * 10 + 2) = 0 And Board(y * 10 + 3) = 0 And Board(y * 10 + 4) = 0 Then
                             ' B. Check Safety: Current(E), Middle(D), Dest(C) must not be attacked
                             ' E=5, D=4, C=3
@@ -779,20 +789,170 @@ Function IsLegalMove(startSq As Integer, endSq As Integer) As Boolean
     End If
 End Function
 
-Private Sub ApplyCheckerboard()
+' ==========================================
+'  MOVE NOTATION & RECORDING
+' ==========================================
+Public Sub RecordMove(startSq As Integer, endSq As Integer, isCapture As Boolean)
+    Dim pieceMoved As Integer
+    Dim pType As Integer
+    Dim moveText As String
+    Dim startAlg As String, endAlg As String
+    
+    ' 1. Increment total move count (plies)
+    MoveCount = MoveCount + 1
+    
+    ' 2. Get the piece that just moved
+    pieceMoved = Board(endSq)
+    pType = GetType(pieceMoved)
+    
+    ' Convert board indexes to "e2", "e4", etc. using your existing function
+    startAlg = IndexToAlgebraic(startSq)
+    endAlg = IndexToAlgebraic(endSq)
+    
+    ' 3. Format Algebraic Notation
+    If pType = W_KING And Abs(endSq - startSq) = 2 Then
+        ' Handle Castling Notation
+        If endSq > startSq Then
+            moveText = "O-O"
+        Else
+            moveText = "O-O-O"
+        End If
+    Else
+        ' Get Piece Letter for standard moves
+        Dim pLetter As String
+        Select Case pType
+            Case W_KNIGHT: pLetter = "N"
+            Case W_BISHOP: pLetter = "B"
+            Case W_ROOK:   pLetter = "R"
+            Case W_QUEEN:  pLetter = "Q"
+            Case W_KING:   pLetter = "K"
+            Case W_PAWN:   pLetter = ""
+        End Select
+        
+        If isCapture Then
+            ' If a pawn captures, we show its starting file (e.g., exd5)
+            If pType = W_PAWN Then pLetter = Left(startAlg, 1)
+            moveText = pLetter & "x" & endAlg
+        Else
+            moveText = pLetter & endAlg
+        End If
+    End If
+    
+    ' 4. Store in engine memory
+    If MoveCount <= UBound(MoveNotation) Then
+        MoveNotation(MoveCount) = moveText
+    End If
+    
+    ' 5. SEND TO THE NEW FANCY UI PANEL!
+    LogMoveToUI moveText, MoveCount
+End Sub
+
+Public Sub ApplyCheckerboard()
     Dim r As Integer, c As Integer
     Dim ws As Worksheet
+    Dim vRow As Integer, vCol As Integer
+    Dim index As Integer
+    Dim isLight As Boolean
+    
     Set ws = ThisWorkbook.Sheets("Chess")
     
     For r = 2 To 9
         For c = 2 To 9
-            If (r + c) Mod 2 <> 0 Then
-                ws.Cells(r, c).Interior.color = RGB(118, 150, 86) ' Green
+            ' Determine 120-array index to check against Highlights
+            If HumanColor = 2 Then
+                vRow = 7 - (r - 2)
+                vCol = 7 - (c - 2)
             Else
-                ws.Cells(r, c).Interior.color = RGB(238, 238, 210) ' Cream
+                vRow = (r - 2)
+                vCol = (c - 2)
+            End If
+            index = 21 + (vRow * 10) + vCol
+            
+            isLight = ((r + c) Mod 2 = 0)
+            
+            ' 1. Last Move Highlighting (Yellowish-Green)
+            If index = LastMoveStart Or index = LastMoveEnd Then
+                If isLight Then
+                    ws.Cells(r, c).Interior.color = RGB(246, 246, 105)
+                Else
+                    ws.Cells(r, c).Interior.color = RGB(186, 202, 67)
+                End If
+                
+            ' 2. Selected Piece Highlighting
+            ElseIf index = SelectedSq Then
+                If isLight Then
+                    ws.Cells(r, c).Interior.color = RGB(214, 214, 150)
+                Else
+                    ws.Cells(r, c).Interior.color = RGB(150, 170, 100)
+                End If
+                
+            ' 3. Standard Checkerboard (Lichess/Chess.com standard)
+            Else
+                If isLight Then
+                    ws.Cells(r, c).Interior.color = RGB(238, 238, 210) ' Cream
+                Else
+                    ws.Cells(r, c).Interior.color = RGB(118, 150, 86)  ' Green
+                End If
             End If
         Next c
     Next r
+End Sub
+
+Public Sub HighlightLegalMoves(startSq As Integer)
+    Dim endSq As Integer
+    Dim vRow As Integer, vCol As Integer
+    Dim r As Integer, c As Integer
+    Dim isCapture As Boolean
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Sheets("Chess")
+    
+    Application.ScreenUpdating = False
+    
+    For endSq = 21 To 98
+        If Board(endSq) <> OFF_BOARD Then
+            If IsLegalMove(startSq, endSq) Then
+                ' Calculate Visual Coordinates
+                vRow = GetRow(endSq)
+                vCol = GetCol(endSq)
+                
+                If HumanColor = 2 Then
+                    r = (7 - vRow) + 2
+                    c = (7 - vCol) + 2
+                Else
+                    r = vRow + 2
+                    c = vCol + 2
+                End If
+                
+                ' Check if square involves taking an enemy
+                isCapture = (Board(endSq) <> EMPTY_SQ)
+                
+                ' Extra logic for visually confirming En Passant Captures
+                If Board(endSq) = EMPTY_SQ And endSq = EnPassantTarget And GetType(Board(startSq)) = W_PAWN Then
+                    isCapture = True
+                End If
+                
+                ' -- DRAW HIGHLIGHTS --
+                If isCapture Then
+                    ' Red target background for Captures
+                    If (r + c) Mod 2 = 0 Then
+                        ws.Cells(r, c).Interior.color = RGB(225, 125, 115) ' Light Square Red
+                    Else
+                        ws.Cells(r, c).Interior.color = RGB(210, 100, 80) ' Dark Square Red
+                    End If
+                Else
+                    ' Empty Square: Draw a Lichess-style dark dot
+                    With ws.Cells(r, c)
+                        .Value = ChrW(&H25CF) ' Big Dot character
+                        .Font.Name = "Arial"
+                        .Font.color = RGB(80, 100, 60) ' Semi-transparent green appearance
+                        .Font.Size = 14
+                    End With
+                End If
+            End If
+        End If
+    Next endSq
+    
+    Application.ScreenUpdating = True
 End Sub
 
 Function IsPathClear(startSq As Integer, endSq As Integer) As Boolean
@@ -801,9 +961,7 @@ Function IsPathClear(startSq As Integer, endSq As Integer) As Boolean
     Dim curr As Integer
     
     diff = endSq - startSq
-    
-   
-    
+
     If diff Mod 10 = 0 Then
         ' Vertical Move
         step = 10 * Sgn(diff)
@@ -955,6 +1113,7 @@ End Function
 Public Sub HighlightChecks()
     Dim i As Integer, piece As Integer
     Dim r As Integer, c As Integer
+    Dim vRow As Integer, vCol As Integer
     Dim ws As Worksheet
     Set ws = ThisWorkbook.Sheets("Chess")
     
@@ -962,21 +1121,20 @@ Public Sub HighlightChecks()
     For i = 21 To 98
         piece = Board(i)
         
-        ' If White King is found AND is under attack by Black (2)
-        If piece = W_KING Then
-            If IsSquareAttacked(i, 2) Then
-                r = GetRow(i) + 2
-                c = GetCol(i) + 2
-                ws.Cells(r, c).Interior.color = RGB(255, 100, 100) ' Soft Red
+        If (piece = W_KING And IsSquareAttacked(i, 2)) Or (piece = B_KING And IsSquareAttacked(i, 1)) Then
+            vRow = GetRow(i)
+            vCol = GetCol(i)
+            
+            ' Flipped mapping for red Check highlights
+            If HumanColor = 2 Then
+                r = (7 - vRow) + 2
+                c = (7 - vCol) + 2
+            Else
+                r = vRow + 2
+                c = vCol + 2
             End If
             
-        ' If Black King is found AND is under attack by White (1)
-        ElseIf piece = B_KING Then
-            If IsSquareAttacked(i, 1) Then
-                r = GetRow(i) + 2
-                c = GetCol(i) + 2
-                ws.Cells(r, c).Interior.color = RGB(255, 100, 100) ' Soft Red
-            End If
+            ws.Cells(r, c).Interior.color = RGB(255, 100, 100) ' Soft Red Warning
         End If
     Next i
 End Sub
@@ -1022,18 +1180,30 @@ Function HasLegalMoves(colorToCheck As Integer) As Boolean
     HasLegalMoves = False
 End Function
 
-Sub CheckGameStatus()
+Public Sub CheckGameStatus()
     Dim ws As Worksheet
     Set ws = ThisWorkbook.Sheets("Chess")
     
-    ' Check if the CURRENT player has any moves
+    ' 1. Record current board state for Threefold Repetition
+    RecordPosition
+    
+    ' 2. Check Draw Rules
+    If IsInsufficientMaterial() Then
+        ShowGameOverMenu "DRAW!", "Insufficient Material"
+        Board(0) = 0 ' Ends game
+        Exit Sub
+    End If
+    
+    If IsThreefoldRepetition() Then
+        ShowGameOverMenu "DRAW!", "Threefold Repetition"
+        Board(0) = 0 ' Ends game
+        Exit Sub
+    End If
+    
+    ' 3. Check for Checkmate or Stalemate
     If HasLegalMoves(Turn) = False Then
         
-        ' No moves left. Checkmate or Stalemate?
-        
-        ' 1. Find the King
-        Dim kIndex As Integer, i As Integer
-        Dim kVal As Integer
+        Dim kIndex As Integer, i As Integer, kVal As Integer
         If Turn = 1 Then kVal = W_KING Else kVal = B_KING
         
         For i = 21 To 98
@@ -1042,24 +1212,16 @@ Sub CheckGameStatus()
                 Exit For
             End If
         Next i
-         If kIndex = 0 Then
-            MsgBox "Error: King not found on board!"
-            Exit Sub
-        End If
         
-        ' 2. Is King Attacked?
-        ' (Note: We check if attacked by the ENEMY, so 3 - Turn flips 1 to 2 and 2 to 1)
-        Dim enemyColor As Integer
-        enemyColor = 3 - Turn
+        Dim enemyColor As Integer: enemyColor = 3 - Turn
         
         If IsSquareAttacked(kIndex, enemyColor) Then
-            MsgBox "CHECKMATE! " & (IIf(Turn = 2, "White", "Black")) & " Wins!"
+            ShowGameOverMenu "CHECKMATE!", IIf(Turn = 2, "White", "Black") & " Wins!"
         Else
-            MsgBox "STALEMATE! Game is a Draw."
+            ShowGameOverMenu "STALEMATE!", "Game is a Draw."
         End If
         
-        ' Optional: Reset the game automatically?
-        ' InitBoard
+        Board(0) = 0 ' Turn off game flag so menu buttons work again
     End If
 End Sub
 
@@ -1113,5 +1275,90 @@ Public Sub HandlePromotion(sq As Integer)
     End If
 End Sub
 
+' --- DRAW RULE HELPER FUNCTIONS ---
 
+Private Sub RecordPosition()
+    Dim i As Integer, s As String
+    ' Create a string representation of the board + whose turn it is
+    For i = 21 To 98
+        If Board(i) <> OFF_BOARD Then s = s & Board(i) & ","
+    Next i
+    s = s & Turn
+    
+    PositionCount = PositionCount + 1
+    If PositionCount <= 500 Then
+        PositionHistory(PositionCount) = s
+    End If
+End Sub
+
+Private Function IsThreefoldRepetition() As Boolean
+    If PositionCount < 5 Then Exit Function ' Needs at least 5 turns to repeat 3 times
+    
+    Dim currentPos As String
+    currentPos = PositionHistory(PositionCount)
+    
+    Dim matchCount As Integer
+    matchCount = 0
+    
+    Dim i As Integer
+    For i = 1 To PositionCount
+        If PositionHistory(i) = currentPos Then
+            matchCount = matchCount + 1
+        End If
+    Next i
+    
+    If matchCount >= 3 Then IsThreefoldRepetition = True Else IsThreefoldRepetition = False
+End Function
+
+Private Function IsInsufficientMaterial() As Boolean
+    Dim i As Integer, p As Integer
+    Dim knightCount As Integer, bishopCount As Integer
+    Dim majorPiece As Boolean
+    
+    For i = 21 To 98
+        p = Board(i)
+        If p <> EMPTY_SQ And p <> OFF_BOARD Then
+            Select Case p
+                Case 1, 7, 4, 10, 5, 11 ' Pawns, Rooks, Queens
+                    majorPiece = True
+                    Exit For
+                Case 2, 8 ' Knights
+                    knightCount = knightCount + 1
+                Case 3, 9 ' Bishops
+                    bishopCount = bishopCount + 1
+            End Select
+        End If
+    Next i
+    
+    ' If there's a Pawn, Rook, or Queen, checkmate is still possible
+    If majorPiece Then
+        IsInsufficientMaterial = False
+    ' If just Kings, King+Knight, or King+Bishop remain, checkmate is impossible
+    ElseIf (knightCount + bishopCount) <= 1 Then
+        IsInsufficientMaterial = True
+    Else
+        IsInsufficientMaterial = False
+    End If
+End Function
+
+' --- HELPER FUNCTIONS ---
+
+' Simplify piece value to Type (1=Pawn, 2=Knight... regardless of color)
+Public Function GetType(pieceVal As Integer) As Integer
+    If pieceVal > 6 Then
+        GetType = pieceVal - 6
+    Else
+        GetType = pieceVal
+    End If
+End Function
+
+' Get the Row (0-7) from the 10x12 Index
+Public Function GetRow(idx As Integer) As Integer
+    GetRow = (idx \ 10) - 2
+End Function
+
+' Get the Col (0-7) from the 10x12 Index
+Public Function GetCol(idx As Integer) As Integer
+    GetCol = (idx Mod 10) - 1
+End Function
 

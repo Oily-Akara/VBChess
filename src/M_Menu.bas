@@ -14,51 +14,29 @@ Public MoveCount As Integer
 Public IsSideMenuOpen As Boolean ' Tracks if we are selecting a side
 
 ' Initialize the menu
+' Initialize the menu (Updated to trigger the fancy UI instead of text cells)
 Public Sub ShowGameMenu()
     Dim ws As Worksheet
     Set ws = ThisWorkbook.Sheets("Chess")
     
-    
     CurrentGameMode = 0
     IsSideMenuOpen = False
     
-    ' Clear the board and UI
+    ' Tells the engine the game is not active
+    Board(0) = 0
+    
+    ' Clear the board and old UI
     ws.Range("B2:I9").ClearContents
     ws.Range("B2:I9").Interior.ColorIndex = xlNone
     ApplyCheckerboard
     
-    ws.Range("K2:K20").ClearContents
-    ws.Range("K2:K20").Interior.ColorIndex = xlNone
-    ws.Range("K2:K20").Borders.LineStyle = xlNone
-    ws.Range("M1:N100").ClearContents
+    ' Wipe the whole right side clean
+    ws.Range("J1:Z100").Clear
+    ws.Range("J1:Z100").Borders.LineStyle = xlNone
+    ws.Range("J1:Z100").Interior.ColorIndex = xlNone
     
-    ' Create Title
-    With ws.Range("K2")
-        .Value = "VBCHESS"
-        .Font.Bold = True
-        .Font.Size = 14
-    End With
-    
-    ' Create Main Menu Options
-    ws.Range("K4").Value = "Select Game Mode:"
-    
-    With ws.Range("K5")
-        .Value = "1. PLAYER vs PLAYER"
-        .Interior.color = RGB(100, 150, 200) ' Blue
-        .Font.Bold = True
-        .HorizontalAlignment = xlCenter
-        .Font.color = vbWhite
-    End With
-    
-    With ws.Range("K6")
-        .Value = "2. PLAYER vs AI"
-        .Interior.color = RGB(200, 100, 100) ' Red
-        .Font.Bold = True
-        .HorizontalAlignment = xlCenter
-        .Font.color = vbWhite
-    End With
-    
-    ws.Range("K8").Value = "Click a mode to start"
+    ' Trigger our beautiful new graphical menu overlay
+    ShowFancyMenu
 End Sub
 
 ' Show the Side Selection Sub-Menu
@@ -229,41 +207,7 @@ Function IndexToAlgebraic(sq As Integer) As String
     IndexToAlgebraic = Mid(files, col + 1, 1) & (8 - row)
 End Function
 
-Public Sub RecordMove(startSq As Integer, endSq As Integer, captureFlag As Boolean)
-    On Error Resume Next
-    If UBound(MoveNotation) = 0 Then ReDim MoveNotation(1 To 200): MoveCount = 0
-    If Err.Number <> 0 Then ReDim MoveNotation(1 To 200): MoveCount = 0: Err.Clear
-    On Error GoTo 0
-    
-    MoveCount = MoveCount + 1
-    
-    Dim piece As Integer, notation As String
-    piece = Board(endSq)
-    Dim pieceSymbol As String
-    Select Case GetType(piece)
-        Case W_KING: pieceSymbol = "K"
-        Case W_QUEEN: pieceSymbol = "Q"
-        Case W_ROOK: pieceSymbol = "R"
-        Case W_BISHOP: pieceSymbol = "B"
-        Case W_KNIGHT: pieceSymbol = "N"
-        Case W_PAWN: pieceSymbol = ""
-    End Select
-    
-    notation = pieceSymbol
-    If captureFlag Then
-        If pieceSymbol = "" Then notation = Mid("abcdefgh", GetCol(startSq) + 1, 1)
-        notation = notation & "x"
-    End If
-    notation = notation & IndexToAlgebraic(endSq)
-    
-    Dim enemyColor As Integer: enemyColor = 3 - Turn
-    If IsKingInCheck(enemyColor) Then
-        If Not HasLegalMoves(enemyColor) Then notation = notation & "#" Else notation = notation & "+"
-    End If
-    
-    MoveNotation(MoveCount) = notation
-    UpdateMoveDisplay
-End Sub
+
 
 Private Sub UpdateMoveDisplay()
     Dim ws As Worksheet
